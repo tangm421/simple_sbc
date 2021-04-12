@@ -117,7 +117,7 @@ void SimpleSBC::shutdown()
     mRunning = false;
 }
 
-bool SimpleSBC::makeNewCall(const resip::Uri& aor)
+bool SimpleSBC::makeNewCall(const resip::Uri& aor, const Data& sdpfile)
 {
     ContactList cl;
     mRegMgr->getContacts(aor, cl);
@@ -152,7 +152,7 @@ bool SimpleSBC::makeNewCall(const resip::Uri& aor)
             userProfile->setClientOutboundFlowTuple(rec.mReceivedFrom);
 
             SSDialogSet* newCall = new SSDialogSet(*this);
-            newCall->initiateCall(rec.mContact, std::move(userProfile));
+            newCall->initiateCall(rec.mContact, std::move(userProfile), sdpfile);
 
             addCall(newCall);
 
@@ -263,6 +263,7 @@ bool SimpleSBC::createDialogUsageManager()
 
     mDum->setServerRegistrationHandler(this);
     mDum->setInviteSessionHandler(this);
+    mDum->setDialogSetHandler(this);
     mDum->setRegistrationPersistenceManager(mRegMgr);
     mDum->setKeepAliveManager(std::unique_ptr<KeepAliveManager>(new KeepAliveManager));
 
@@ -426,6 +427,16 @@ void SimpleSBC::onTerminated(InviteSessionHandle h, InviteSessionHandler::Termin
     }
 }
 
+void SimpleSBC::onAnswer(InviteSessionHandle h, const SipMessage& msg, const SdpContents& sdp)
+{
+    dynamic_cast<SSDialogSet*>(h->getAppDialogSet().get())->onAnswer(h, msg, sdp);
+}
+
+void SimpleSBC::onTrying(resip::AppDialogSetHandle h, const resip::SipMessage& msg)
+{
+    dynamic_cast<SSDialogSet*>(h.get())->onTrying(h, msg);
+}
+
 void SimpleSBC::cleanupObjects()
 {
     delete mRegMgr; mRegMgr = 0;
@@ -476,10 +487,10 @@ SSDialogSet::SSDialogSet(SimpleSBC& ss) : AppDialogSet(*ss.mDum), mSbc(ss)
 {
 }
 
-void SSDialogSet::initiateCall(const resip::NameAddr& target, std::shared_ptr<resip::UserProfile> profile)
+void SSDialogSet::initiateCall(const resip::NameAddr& target, std::shared_ptr<resip::UserProfile> profile, const resip::Data& sdpfile)
 {
     SdpContents offer;
-    makeOffer(offer);
+    makeOffer(offer, sdpfile);
     auto invite = mSbc.getDialogUsageManager().makeInviteSession(target, std::move(profile), &offer, this);
     mSbc.getDialogUsageManager().send(std::move(invite));
 }
@@ -528,6 +539,9 @@ void SSDialogSet::onAnswer(resip::InviteSessionHandle h, const resip::SipMessage
 {
     mInviteSessionHandle = h->getSessionHandle();
     InfoLog(<< "Received answer..." << msg);
+    const NameAddr& from = msg.header(h_From);
+    const NameAddr& contact = msg.header(h_Contacts).front();
+    InfoLog(<< "from displayname:" << from.displayName() << ", contact displayname:" << contact.displayName());
 }
 
 EncodeStream& SSDialogSet::dump(EncodeStream& strm) const
@@ -542,7 +556,7 @@ EncodeStream& SSDialogSet::dump(EncodeStream& strm) const
     }
 }
 
-void SSDialogSet::makeOffer(resip::SdpContents& offer, bool loadFromFile /*= false*/)
+void SSDialogSet::makeOffer(resip::SdpContents& offer, const resip::Data& sdpfile)
 {
     static Data txt("v=0\r\n"
         "o=- 0 0 IN IP4 0.0.0.0\r\n"
@@ -554,7 +568,7 @@ void SSDialogSet::makeOffer(resip::SdpContents& offer, bool loadFromFile /*= fal
         "a=rtpmap:101 telephone-event/8000\r\n"
         "a=fmtp:101 0-15\r\n");
 
-    if (loadFromFile)
+    if (!sdpfile.empty())
     {
         try
         {

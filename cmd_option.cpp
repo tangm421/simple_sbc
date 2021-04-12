@@ -276,7 +276,7 @@ bool CmdCall::exec()
         return false;
     }
 
-    return mSbc->makeNewCall(aor);
+    return mSbc->makeNewCall(aor, mFile);
 }
 
 //////////////////////////////////////////////////////////////////////////

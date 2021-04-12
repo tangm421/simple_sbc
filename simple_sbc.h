@@ -12,6 +12,7 @@
 #include "resip/dum/AppDialogSetFactory.hxx"
 #include "resip/dum/UserProfile.hxx"
 #include "resip/dum/MasterProfile.hxx"
+#include "resip/dum/DialogSetHandler.hxx"
 #include "resip/stack/SipMessage.hxx"
 
 #include "cmd_option.h"
@@ -50,9 +51,9 @@ public:
 class SSDialogSet;
 class SimpleSBC
     : public resip::ServerProcess
-    , public resip::ClientRegistrationHandler
     , public resip::ServerRegistrationHandler
     , public resip::InviteSessionHandler
+    , public resip::DialogSetHandler
 {
 public:
     using SipMessage = resip::SipMessage;
@@ -73,7 +74,7 @@ public:
     bool startup(std::unique_ptr<CmdRunner> cmd);
     void shutdown();
 
-    bool makeNewCall(const resip::Uri& aor);
+    bool makeNewCall(const resip::Uri& aor, const resip::Data& sdpfile);
     void finishCall(const std::list<UInt64>& cids);
     void showAllReg();
     void showAllCall();
@@ -93,18 +94,7 @@ protected:
     void addDomains(resip::TransactionUser& tu);
     bool addTransports();
 
-    //////////////////////////////////////////////////////////////////////////
-    virtual void onSuccess(ClientRegistrationHandle, const SipMessage& response) {}
-    /// Called when all of my bindings have been removed
-    virtual void onRemoved(ClientRegistrationHandle, const SipMessage& response) {}
-    /// call on Retry-After failure. 
-    /// return values: -1 = fail, 0 = retry immediately, N = retry in N seconds
-    virtual int onRequestRetry(ClientRegistrationHandle, int retrySeconds, const SipMessage& response) { return 0; }
-    /// Called if registration fails, usage will be destroyed (unless a 
-    /// Registration retry interval is enabled in the Profile)
-    virtual void onFailure(ClientRegistrationHandle, const SipMessage& response) {}
-
-    //////////////////////////////////////////////////////////////////////////
+    // Server Registration Handler ////////////////////////////////////////////////////////////////////////
     /// Called when registration is refreshed
     virtual void onRefresh(ServerRegistrationHandle, const SipMessage& reg);
     /// called when one or more specified contacts is removed
@@ -117,7 +107,7 @@ protected:
     /// Called when a client queries for the list of current registrations
     virtual void onQuery(ServerRegistrationHandle, const SipMessage& reg);
 
-    //////////////////////////////////////////////////////////////////////////
+    // Invite Session Handler ////////////////////////////////////////////////////////////////////////
     /// called when an initial INVITE or the intial response to an outoing invite  
     virtual void onNewSession(ClientInviteSessionHandle, InviteSession::OfferAnswerType oat, const SipMessage& msg);
     virtual void onNewSession(ServerInviteSessionHandle, InviteSession::OfferAnswerType oat, const SipMessage& msg) {}
@@ -158,7 +148,7 @@ protected:
     virtual void onReadyToSend(InviteSessionHandle, SipMessage& msg) {}
     /// called when an answer is received - has nothing to do with user
     /// answering the call 
-    virtual void onAnswer(InviteSessionHandle, const SipMessage& msg, const SdpContents&) {}
+    virtual void onAnswer(InviteSessionHandle, const SipMessage& msg, const SdpContents&);
     /// called when an offer is received - must send an answer soon after this
     virtual void onOffer(InviteSessionHandle, const SipMessage& msg, const SdpContents&) {}
     /// called when a modified body is received in a 2xx response to a
@@ -196,6 +186,10 @@ protected:
     /// called when an REFER message receives an accepted response 
     virtual void onReferAccepted(InviteSessionHandle, ClientSubscriptionHandle, const SipMessage& msg) {}
 
+    // DialogSetHandler //////////////////////////////////////////////
+    virtual void onTrying(resip::AppDialogSetHandle, const resip::SipMessage& msg);
+    virtual void onNonDialogCreatingProvisional(resip::AppDialogSetHandle, const resip::SipMessage& msg) {}
+
     //////////////////////////////////////////////////////////////////////////
     void cleanupObjects();
     void addCall(SSDialogSet* call);
@@ -232,10 +226,9 @@ class SSDialogSet : public resip::AppDialogSet
 public:
     SSDialogSet(SimpleSBC& ss);
 
-    void initiateCall(const resip::NameAddr& target, std::shared_ptr<resip::UserProfile> profile);
+    void initiateCall(const resip::NameAddr& target, std::shared_ptr<resip::UserProfile> profile, const resip::Data& sdpfile);
     void terminateCall();
 
-    // Invite Session Handler /////////////////////////////////////////////////////
     virtual void onNewSession(resip::ClientInviteSessionHandle h, resip::InviteSession::OfferAnswerType oat, const resip::SipMessage& msg);
     virtual void onNewSession(resip::ServerInviteSessionHandle h, resip::InviteSession::OfferAnswerType oat, const resip::SipMessage& msg) {}
     virtual void onFailure(resip::ClientInviteSessionHandle h, const resip::SipMessage& msg);
@@ -266,26 +259,13 @@ public:
     virtual void onReadyToSend(resip::InviteSessionHandle, resip::SipMessage& msg) {}
     virtual void onFlowTerminated(resip::InviteSessionHandle) {}
 
-    // DialogSetHandler  //////////////////////////////////////////////
     virtual void onTrying(resip::AppDialogSetHandle, const resip::SipMessage& msg);
     virtual void onNonDialogCreatingProvisional(resip::AppDialogSetHandle, const resip::SipMessage& msg) {}
-
-    // ClientSubscriptionHandler ///////////////////////////////////////////////////
-    virtual void onUpdatePending(resip::ClientSubscriptionHandle h, const resip::SipMessage& notify, bool outOfOrder) {}
-    virtual void onUpdateActive(resip::ClientSubscriptionHandle h, const resip::SipMessage& notify, bool outOfOrder) {}
-    virtual void onUpdateExtension(resip::ClientSubscriptionHandle h, const resip::SipMessage& notify, bool outOfOrder) {}
-    virtual void onNotifyNotReceived(resip::ClientSubscriptionHandle h) {}
-    virtual void onTerminated(resip::ClientSubscriptionHandle h, const resip::SipMessage* notify) {}
-    virtual void onNewSubscription(resip::ClientSubscriptionHandle h, const resip::SipMessage& notify) {}
-    virtual int  onRequestRetry(resip::ClientSubscriptionHandle h, int retrySeconds, const resip::SipMessage& notify) { return 0; }
-
-    // RedirectHandler /////////////////////////////////////////////////////////////
-    virtual void onRedirectReceived(resip::AppDialogSetHandle h, const resip::SipMessage& msg) {}
 
     EncodeStream& dump(EncodeStream& strm) const;
 
 protected:
-    void makeOffer(resip::SdpContents& offer, bool loadFromFile = false);
+    void makeOffer(resip::SdpContents& offer, const resip::Data& sdpfile);
 private:
     SimpleSBC& mSbc;
     resip::InviteSessionHandle mInviteSessionHandle;

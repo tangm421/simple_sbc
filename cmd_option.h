@@ -97,7 +97,7 @@ public:
         };
 
         struct poptOption tableSipAddr[] = {
-            { "addr",        'a', POPT_ARG_STRING,  &sipAddress,    0, "Local IP Address to bind SIP transports to, If left blank sbc will bind to all adapters. default is blank", 0 },
+            { "addr",        'a', POPT_ARG_STRING,  &sipAddress,    0, "Local IP Address to bind SIP transports to, sbc will bind to all adapters if not specified",    0 },
             { "udp-port",    'u', POPT_ARG_INT,     &mSipUdpPort,   0, "Local port to listen on for SIP messages over UDP - 0 to disable, default is `55555`",          "55555" },
             { "tcp-port",    't', POPT_ARG_INT,     &mSipTcpPort,   0, "Local port to listen on for SIP messages over TCP - 0 to disable, default is `55555`",          "55555" },
             POPT_TABLEEND
@@ -194,10 +194,12 @@ public:
     bool run()
     {
         poptString target;
+        poptString file;
         int finish = 0;
         const struct poptOption table[] = {
             { "target", 't', POPT_ARG_STRING,   (void*)&target, 0, "specify a SIP URI to call", "sip:carol@example.com" },
-            { "finish", 'f', POPT_ARG_NONE,     (void*)&finish, 0, "End specifed call, the numbers after behind args which list in `show call`"},
+            { "file",   'f', POPT_ARG_STRING,   (void*)&file,   0, "specify an sdp text file path, use auto-generated sdp content if not specified", "./sdp.txt" },
+            { "end",    'e', POPT_ARG_NONE,     (void*)&finish, 0, "End specifed call, the numbers after behind args which list in `show call`"},
             //getHelpTable(),
             { "help",             'h', POPT_ARG_NONE,           NULL,             'h',  "Show this help message",                               NULL },
             { "usage",            'u', POPT_ARG_NONE,           NULL,             'u',  "Display brief usage message",                          NULL },
@@ -210,6 +212,7 @@ public:
         }
 
         if (target) mTarget = target;
+        if (file) mFile = file;
         mFinish = (finish != 0);
 
         return exec();
@@ -221,6 +224,7 @@ protected:
     bool exec();
 private:
     resip::Data mTarget;
+    resip::Data mFile;
     bool mFinish;
     std::list<UInt64> mCIDs;
 };
