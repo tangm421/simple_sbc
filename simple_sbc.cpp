@@ -8,7 +8,8 @@
 #include "resip/stack/InteropHelper.hxx"
 #include "resip/stack/MessageFilterRule.hxx"
 #include "resip/dum/ClientInviteSession.hxx"
-#include "resip/dum/InMemoryRegistrationDatabase.hxx"
+//#include "resip/dum/InMemoryRegistrationDatabase.hxx"
+#include "resip/dum/InMemorySyncRegDb.hxx"
 #include "resip/dum/ServerRegistration.hxx"
 #include "resip/dum/DialogUsageManager.hxx"
 #include "resip/dum/MasterProfile.hxx"
@@ -28,6 +29,7 @@ using namespace std;
 #define RESIPROCATE_SUBSYSTEM SipSvrSubsystem::SSMODULE
 
 
+UInt64 SimpleSBC::sRID = 1;
 UInt64 SimpleSBC::sCID = 1;
 
 SimpleSBC::SimpleSBC()
@@ -119,50 +121,26 @@ void SimpleSBC::shutdown()
 
 bool SimpleSBC::makeNewCall(const resip::Uri& aor, const Data& sdpfile)
 {
-    ContactList cl;
-    mRegMgr->getContacts(aor, cl);
-    if (cl.empty())
+    auto id = mAor2Id.find(aor);
+    if (id == mAor2Id.end())
     {
-        cerr << aor << " has no contact" << endl;
+        cerr << aor << " not exist in register manager anymore!, Type `show reg` for details" << endl;
         return false;
     }
 
-    UInt64 now = Timer::getTimeSecs();
-    for (auto rec : cl)
+    return makeNewCall(id->second, sdpfile);
+}
+
+bool SimpleSBC::makeNewCall(UInt64 id, const resip::Data& sdpfile)
+{
+    auto reg = mRegs.find(id);
+    if (reg == mRegs.end())
     {
-        if (rec.mRegExpires > now)
-        {
-            std::shared_ptr<UserProfile> userProfile;
-            if (rec.mReceivedFrom.getType() == resip::UDP)
-            {
-                userProfile = std::make_shared<UserProfile>(mProxyUdp);
-            }
-            else if (rec.mReceivedFrom.getType() == resip::TCP)
-            {
-                userProfile = std::make_shared<UserProfile>(mProxyUdp);
-            }
-            else
-            {
-                ErrLog(<< "Only support UDP and TCP for INVITE!");
-                resip_assert(0);
-            }
-
-            userProfile->setDefaultFrom(userProfile->getAnonymousUserProfile()->getDefaultFrom());
-            userProfile->clientOutboundEnabled() = true;
-            userProfile->setClientOutboundFlowTuple(rec.mReceivedFrom);
-
-            SSDialogSet* newCall = new SSDialogSet(*this);
-            newCall->initiateCall(rec.mContact, std::move(userProfile), sdpfile);
-
-            addCall(newCall);
-
-            return true;
-        }
+        cerr << id << " not exist in register manager anymore!, Type `show reg` for details" << endl;
+        return false;
     }
 
-    cerr << aor << " has no valid contact!" << endl;
-
-    return false;
+    return makeNewCall(reg->second, sdpfile);
 }
 
 void SimpleSBC::finishCall(const std::list<UInt64>& cids)
@@ -177,24 +155,33 @@ void SimpleSBC::finishCall(const std::list<UInt64>& cids)
     }
 }
 
+bool SimpleSBC::makeReinvite(UInt64 id, const resip::Data& sdpfile)
+{
+    auto ret = mCalls.find(id);
+    if (ret == mCalls.end())
+    {
+        cerr << id << " not exist in call manager anymore!, Type `show call` for details" << endl;
+        return false;
+    }
+
+    return ret->second->reinvite(sdpfile);
+}
+
 void SimpleSBC::showAllReg()
 {
-    RegistrationPersistenceManager::UriList aors;
-    mRegMgr->getAors(aors);
-    for (auto i : aors)
+    for (auto i : mRegs)
     {
-        ContactList cl;
-        cout << "--Aor:" << i << endl;
-        mRegMgr->getContacts(i, cl);
-        for (auto j : cl)
+        const ContactList* cl = i.second.mContacts;
+        cout << i.first << " --> Aor:" << i.second.mAor << endl;
+        for (auto j : *cl)
         {
             UInt64 expire = 0;
             if (j.mRegExpires > ResipClock::getTimeSecs())
             {
                 expire = j.mRegExpires - ResipClock::getTimeSecs();
             }
-            cout << "  --Contact:" << j.mContact << endl
-                 << "    Expires In:" << expire << endl;
+            cout << "      --Contact:" << j.mContact << endl
+                 << "      --Expires In:" << expire << endl;
         }
     }
 }
@@ -290,13 +277,15 @@ bool SimpleSBC::createDialogUsageManager()
 
     mDumThread = new DumThread(*mDum);
 
+    dynamic_cast<InMemorySyncRegDb*>(mRegMgr)->addHandler(this);
+
     return true;
 }
 
 bool SimpleSBC::createRegistrationManager()
 {
     resip_assert(!mRegMgr);
-    mRegMgr = new InMemoryRegistrationDatabase();
+    mRegMgr = new InMemorySyncRegDb();
     return true;
 }
 
@@ -330,6 +319,33 @@ bool SimpleSBC::addTransports()
         return false;
     }
     return true;
+}
+
+void SimpleSBC::onAorModified(const resip::Uri& aor, const ContactList& contacts)
+{
+    if (contacts.empty())
+    {
+        auto id = mAor2Id.find(aor);
+        if (id != mAor2Id.end())
+        {
+            mRegs.erase(id->second);
+            mAor2Id.erase(id);
+        }
+    }
+    else
+    {
+        auto id = mAor2Id.find(aor);
+        if (id != mAor2Id.end())
+        {
+            mRegs.insert(std::make_pair(id->second, AorContact(aor, &contacts)));
+        }
+        else
+        {
+            mAor2Id[aor] = sRID;
+            mRegs.insert(std::make_pair(sRID, AorContact(aor, &contacts)));
+            ++sRID;
+        }
+    }
 }
 
 void SimpleSBC::onRefresh(ServerRegistrationHandle h, const SipMessage& reg)
@@ -432,6 +448,16 @@ void SimpleSBC::onAnswer(InviteSessionHandle h, const SipMessage& msg, const Sdp
     dynamic_cast<SSDialogSet*>(h->getAppDialogSet().get())->onAnswer(h, msg, sdp);
 }
 
+void SimpleSBC::onRemoteSdpChanged(InviteSessionHandle h, const SipMessage& msg, const SdpContents& sdp)
+{
+    dynamic_cast<SSDialogSet*>(h->getAppDialogSet().get())->onRemoteSdpChanged(h, msg, sdp);
+}
+
+void SimpleSBC::onOfferRequestRejected(InviteSessionHandle h, const SipMessage& msg)
+{
+    dynamic_cast<SSDialogSet*>(h->getAppDialogSet().get())->onOfferRequestRejected(h, msg);
+}
+
 void SimpleSBC::onTrying(resip::AppDialogSetHandle h, const resip::SipMessage& msg)
 {
     dynamic_cast<SSDialogSet*>(h.get())->onTrying(h, msg);
@@ -446,6 +472,54 @@ void SimpleSBC::cleanupObjects()
     delete mSipStack; mSipStack = 0;
     delete mAsyncProcessHandler; mAsyncProcessHandler = 0;
     delete mFdPollGrp; mFdPollGrp = 0;
+}
+
+
+bool SimpleSBC::makeNewCall(const AorContact& ac, const resip::Data& sdpfile)
+{
+    const ContactList* cl = ac.mContacts;
+    if (cl->empty())
+    {
+        cerr << ac.mAor << " has no contact" << endl;
+        return false;
+    }
+
+    UInt64 now = Timer::getTimeSecs();
+    for (auto rec : *cl)
+    {
+        if (rec.mRegExpires > now)
+        {
+            std::shared_ptr<UserProfile> userProfile;
+            if (rec.mReceivedFrom.getType() == resip::UDP)
+            {
+                userProfile = std::make_shared<UserProfile>(mProxyUdp);
+            }
+            else if (rec.mReceivedFrom.getType() == resip::TCP)
+            {
+                userProfile = std::make_shared<UserProfile>(mProxyUdp);
+            }
+            else
+            {
+                ErrLog(<< "Only support UDP and TCP for INVITE!");
+                resip_assert(0);
+            }
+
+            userProfile->setDefaultFrom(userProfile->getAnonymousUserProfile()->getDefaultFrom());
+            userProfile->clientOutboundEnabled() = true;
+            userProfile->setClientOutboundFlowTuple(rec.mReceivedFrom);
+
+            SSDialogSet* newCall = new SSDialogSet(*this);
+            newCall->initiateCall(rec.mContact, std::move(userProfile), sdpfile);
+
+            addCall(newCall);
+
+            return true;
+        }
+    }
+
+    cerr << ac.mAor << " has no valid contact!" << endl;
+
+    return false;
 }
 
 void SimpleSBC::addCall(SSDialogSet* call)
@@ -483,8 +557,14 @@ resip::AppDialogSet* SSDialogSetFactory::createAppDialogSet(DialogUsageManager& 
     }
 }
 
+//////////////////////////////////////////////////////////////////////////
 SSDialogSet::SSDialogSet(SimpleSBC& ss) : AppDialogSet(*ss.mDum), mSbc(ss)
 {
+}
+
+SSDialogSet::~SSDialogSet()
+{
+    cerr << *this << endl;
 }
 
 void SSDialogSet::initiateCall(const resip::NameAddr& target, std::shared_ptr<resip::UserProfile> profile, const resip::Data& sdpfile)
@@ -493,6 +573,35 @@ void SSDialogSet::initiateCall(const resip::NameAddr& target, std::shared_ptr<re
     makeOffer(offer, sdpfile);
     auto invite = mSbc.getDialogUsageManager().makeInviteSession(target, std::move(profile), &offer, this);
     mSbc.getDialogUsageManager().send(std::move(invite));
+}
+
+bool SSDialogSet::reinvite(const resip::Data& sdpfile)
+{
+    if (!mInviteSessionHandle->isConnected())
+    {
+        cerr << "call not connected, Illegal operation" << endl;
+        return false;
+    }
+
+    if (sdpfile.empty())
+    {
+        const SdpContents& sdp = mInviteSessionHandle->getLocalSdp();
+        mInviteSessionHandle->provideOffer(sdp);
+    }
+    else
+    {
+        SdpContents sdp;
+        if (!readSdpFromFile(sdp, sdpfile))
+        {
+            return false;
+        }
+        else
+        {
+            mInviteSessionHandle->provideOffer(sdp);
+        }
+    }
+
+    return true;
 }
 
 void SSDialogSet::terminateCall()
@@ -544,6 +653,19 @@ void SSDialogSet::onAnswer(resip::InviteSessionHandle h, const resip::SipMessage
     InfoLog(<< "from displayname:" << from.displayName() << ", contact displayname:" << contact.displayName());
 }
 
+
+void SSDialogSet::onRemoteSdpChanged(resip::InviteSessionHandle h, const resip::SipMessage& msg, const resip::SdpContents& sdp)
+{
+    mInviteSessionHandle = h->getSessionHandle();
+    InfoLog(<< "Received onRemoteSdpChanged..." << msg);
+}
+
+void SSDialogSet::onOfferRequestRejected(resip::InviteSessionHandle h, const resip::SipMessage& msg)
+{
+    mInviteSessionHandle = h->getSessionHandle();
+    InfoLog(<< "Received onOfferRequestRejected..." << msg);
+}
+
 EncodeStream& SSDialogSet::dump(EncodeStream& strm) const
 {
     if (mInviteSessionHandle.isValid())
@@ -568,27 +690,40 @@ void SSDialogSet::makeOffer(resip::SdpContents& offer, const resip::Data& sdpfil
         "a=rtpmap:101 telephone-event/8000\r\n"
         "a=fmtp:101 0-15\r\n");
 
-    if (!sdpfile.empty())
-    {
-        try
-        {
-            txt = Data::fromFile(mSbc.getSdpFile());
-        }
-        catch (...)
-        {
-            cerr << "failed to read sdp from file:" << mSbc.getSdpFile() << ", use default sdp" << endl;
-        }
-    }
-
-    static HeaderFieldValue hfv(txt.data(), txt.size());
-    static Mime type("application", "sdp");
-    static SdpContents offerSdp(hfv, type);
-
-    offer = offerSdp;
+    HeaderFieldValue hfv(txt.data(), txt.size());
+    Mime type("application", "sdp");
+    SdpContents offerSdp(hfv, type);
 
     // Set sessionid and version for this offer
     UInt64 currentTime = Timer::getTimeMicroSec();
-    offer.session().origin().getSessionId() = currentTime;
-    offer.session().origin().getVersion() = currentTime;
+    offerSdp.session().origin().getSessionId() = currentTime;
+    offerSdp.session().origin().getVersion() = currentTime;
+
+    offer = offerSdp;
+
+    if (sdpfile.empty())
+    {
+        readSdpFromFile(offer, sdpfile);
+    }
+}
+
+bool SSDialogSet::readSdpFromFile(resip::SdpContents& sdp, const resip::Data& sdpfile)
+{
+    try
+    {
+        Data txt(Data::fromFile(sdpfile));
+        HeaderFieldValue hfv(txt.data(), txt.size());
+        Mime type("application", "sdp");
+        SdpContents offerSdp(hfv, type);
+
+        sdp = offerSdp;
+
+        return true;
+    }
+    catch (...)
+    {
+        cerr << "failed to read sdp from file:" << sdpfile << ", use default sdp" << endl;
+        return false;
+    }
 }
 

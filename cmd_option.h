@@ -189,17 +189,19 @@ protected:
 class CmdCall : public Cmd
 {
 public:
-    CmdCall(bool showUsage = false) : Cmd(Call, showUsage), mFinish(false) {}
+    CmdCall(bool showUsage = false) : Cmd(Call, showUsage), mStart(false), mEnd(false), mReinvite(false) {}
     CmdCall(int argc, const char** argv, SimpleSBC* sbc);
     bool run()
     {
         poptString target;
         poptString file;
+        int id= 0;
         int finish = 0;
         const struct poptOption table[] = {
-            { "target", 't', POPT_ARG_STRING,   (void*)&target, 0, "specify a SIP URI to call", "sip:carol@example.com" },
-            { "file",   'f', POPT_ARG_STRING,   (void*)&file,   0, "specify an sdp text file path, use auto-generated sdp content if not specified", "./sdp.txt" },
-            { "end",    'e', POPT_ARG_NONE,     (void*)&finish, 0, "End specifed call, the numbers after behind args which list in `show call`"},
+            { "id",     'i', POPT_ARG_NONE,     0,             'i', "Start a new call, the reg id after behind args which list in `show reg`", 0 },
+            { "file",   'f', POPT_ARG_STRING,   (void*)&file,   0,  "specify an sdp text file path, use auto-generated sdp content if not specified", "./sdp.txt" },
+            { "end",    'e', POPT_ARG_NONE,     0,             'e', "End specifed call, the numbers after behind args which list in `show call`", 0} ,
+            { "re-invite", 'r', POPT_ARG_NONE,  0,             'r', "Re-invite an existed call, the reg id after behind args which list in `show call`", 0 },
             //getHelpTable(),
             { "help",             'h', POPT_ARG_NONE,           NULL,             'h',  "Show this help message",                               NULL },
             { "usage",            'u', POPT_ARG_NONE,           NULL,             'u',  "Display brief usage message",                          NULL },
@@ -211,22 +213,22 @@ public:
             return false;
         }
 
-        if (target) mTarget = target;
         if (file) mFile = file;
-        mFinish = (finish != 0);
 
         return exec();
     }
 protected:
-    const char* getReplaceHelpText() { return "[OPTIONS]... [<num1> <num2>...]"; }
+    const char* getReplaceHelpText() { return "[-e] [<num1> <num2>...] | [[-f ./sdp.txt] [-i|-r <num>]|[<SIP URI>]]"; }
     bool processOneOption(poptContext ctx, int ret);
     bool processNonOptionArgs(poptContext ctx);
     bool exec();
 private:
     resip::Data mTarget;
     resip::Data mFile;
-    bool mFinish;
-    std::list<UInt64> mCIDs;
+    bool mStart;
+    bool mEnd;
+    bool mReinvite;
+    std::list<UInt64> mIds;
 };
 
 class CmdShow : public Cmd

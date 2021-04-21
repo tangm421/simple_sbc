@@ -71,6 +71,7 @@ int main(int argc, char* argv[])
 
     sbc.mainLoop();
 
+    intf.join();
     sbc.shutdown();
 
     return 0;

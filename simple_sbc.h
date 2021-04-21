@@ -13,6 +13,7 @@
 #include "resip/dum/UserProfile.hxx"
 #include "resip/dum/MasterProfile.hxx"
 #include "resip/dum/DialogSetHandler.hxx"
+#include "resip/dum/InMemorySyncRegDb.hxx"
 #include "resip/stack/SipMessage.hxx"
 
 #include "cmd_option.h"
@@ -51,6 +52,7 @@ public:
 class SSDialogSet;
 class SimpleSBC
     : public resip::ServerProcess
+    , public resip::InMemorySyncRegDbHandler
     , public resip::ServerRegistrationHandler
     , public resip::InviteSessionHandler
     , public resip::DialogSetHandler
@@ -68,6 +70,18 @@ public:
     using ServerSubscriptionHandle = resip::ServerSubscriptionHandle;
     using UserProfile = resip::UserProfile;
 
+    class AorContact
+    {
+    public:
+        AorContact(const resip::Uri& aor, const resip::ContactList* contacts)
+            : mAor(aor), mContacts(contacts) {}
+        bool operator==(const AorContact* ac) {
+            return mAor == ac->mAor;
+        }
+        resip::Uri mAor;
+        const resip::ContactList* mContacts;
+    };
+
     SimpleSBC();
     ~SimpleSBC();
 
@@ -75,7 +89,9 @@ public:
     void shutdown();
 
     bool makeNewCall(const resip::Uri& aor, const resip::Data& sdpfile);
-    void finishCall(const std::list<UInt64>& cids);
+    bool makeNewCall(UInt64 id, const resip::Data& sdpfile);
+    void finishCall(const std::list<UInt64>& ids);
+    bool makeReinvite(UInt64 id, const resip::Data& sdpfile);
     void showAllReg();
     void showAllCall();
 
@@ -93,6 +109,9 @@ protected:
 
     void addDomains(resip::TransactionUser& tu);
     bool addTransports();
+
+    // InMemorySyncRegDbHandler ////////////////////////////////////////////////////////////////////////
+    void onAorModified(const resip::Uri& aor, const resip::ContactList& contacts);
 
     // Server Registration Handler ////////////////////////////////////////////////////////////////////////
     /// Called when registration is refreshed
@@ -154,9 +173,9 @@ protected:
     /// called when a modified body is received in a 2xx response to a
     /// session-timer reINVITE. Under normal circumstances where the response
     /// body is unchanged from current remote body no handler is called
-    virtual void onRemoteSdpChanged(InviteSessionHandle, const SipMessage& msg, const SdpContents&) {}
+    virtual void onRemoteSdpChanged(InviteSessionHandle, const SipMessage& msg, const SdpContents&);
     /// Called when an error response is received for a reinvite-nobody request (via requestOffer)
-    virtual void onOfferRequestRejected(InviteSessionHandle, const SipMessage& msg) {}
+    virtual void onOfferRequestRejected(InviteSessionHandle, const SipMessage& msg);
     /// called when an Invite w/out offer is sent, or any other context which
     /// requires an offer from the user
     virtual void onOfferRequired(InviteSessionHandle, const SipMessage& msg) {}
@@ -192,6 +211,7 @@ protected:
 
     //////////////////////////////////////////////////////////////////////////
     void cleanupObjects();
+    bool makeNewCall(const AorContact& ac, const resip::Data& sdpfile);
     void addCall(SSDialogSet* call);
     void eraseCall(SSDialogSet* call);
 
@@ -208,7 +228,10 @@ private:
     resip::RegistrationPersistenceManager*  mRegMgr;
     std::shared_ptr<resip::Profile> mProxyUdp;
     std::shared_ptr<resip::Profile> mProxyTcp;
+    HashMap<UInt64, AorContact>     mRegs;
     HashMap<UInt64, SSDialogSet*>   mCalls;
+    HashMap<resip::Uri, UInt64>     mAor2Id;
+    static UInt64 sRID;
     static UInt64 sCID;
 };
 
@@ -225,8 +248,10 @@ class SSDialogSet : public resip::AppDialogSet
 {
 public:
     SSDialogSet(SimpleSBC& ss);
+    ~SSDialogSet();
 
     void initiateCall(const resip::NameAddr& target, std::shared_ptr<resip::UserProfile> profile, const resip::Data& sdpfile);
+    bool reinvite(const resip::Data& sdpfile);
     void terminateCall();
 
     virtual void onNewSession(resip::ClientInviteSessionHandle h, resip::InviteSession::OfferAnswerType oat, const resip::SipMessage& msg);
@@ -241,10 +266,10 @@ public:
     virtual void onRedirected(resip::ClientInviteSessionHandle, const resip::SipMessage& msg) {}
     virtual void onAnswer(resip::InviteSessionHandle, const resip::SipMessage& msg, const resip::SdpContents&);
     virtual void onOffer(resip::InviteSessionHandle handle, const resip::SipMessage& msg, const resip::SdpContents& offer) {}
+    virtual void onRemoteSdpChanged(resip::InviteSessionHandle, const resip::SipMessage& msg, const resip::SdpContents& sdp);
+    virtual void onOfferRequestRejected(resip::InviteSessionHandle, const resip::SipMessage& msg);
     virtual void onOfferRequired(resip::InviteSessionHandle, const resip::SipMessage& msg) {}
     virtual void onOfferRejected(resip::InviteSessionHandle, const resip::SipMessage* msg) {}
-    virtual void onOfferRequestRejected(resip::InviteSessionHandle, const resip::SipMessage& msg) {}
-    virtual void onRemoteSdpChanged(resip::InviteSessionHandle, const resip::SipMessage& msg, const resip::SdpContents& sdp) {}
     virtual void onInfo(resip::InviteSessionHandle, const resip::SipMessage& msg) {}
     virtual void onInfoSuccess(resip::InviteSessionHandle, const resip::SipMessage& msg) {}
     virtual void onInfoFailure(resip::InviteSessionHandle, const resip::SipMessage& msg) {}
@@ -266,6 +291,7 @@ public:
 
 protected:
     void makeOffer(resip::SdpContents& offer, const resip::Data& sdpfile);
+    bool readSdpFromFile(resip::SdpContents& sdp, const resip::Data& sdpfile);
 private:
     SimpleSBC& mSbc;
     resip::InviteSessionHandle mInviteSessionHandle;

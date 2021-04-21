@@ -217,7 +217,7 @@ bool CmdReg::processOneOption(poptContext ctx, int ret)
 }
 
 //////////////////////////////////////////////////////////////////////////
-CmdCall::CmdCall(int argc, const char** argv, SimpleSBC* sbc) : Cmd(argc, argv, Call, sbc)
+CmdCall::CmdCall(int argc, const char** argv, SimpleSBC* sbc) : Cmd(argc, argv, Call, sbc), mStart(false), mEnd(false), mReinvite(false)
 {
 }
 
@@ -225,6 +225,32 @@ bool CmdCall::processOneOption(poptContext ctx, int ret)
 {
     switch (ret)
     {
+    case 'i':
+    {
+        if (mEnd)
+        {
+            setLastErr("Cannot exist at the same time with flag -e|--end", "-i|--id");
+            return false;
+        }
+        mStart = true;
+    }
+        break;
+    case 'e':
+        if (mStart)
+        {
+            setLastErr("Cannot exist at the same time with flag -i|--id", "-e|--end");
+            return false;
+        }
+        mEnd = true;
+        break;
+    case 'r':
+        if (mStart || mEnd)
+        {
+            setLastErr("Cannot exist at the same time with flag -i|--id or -e|--end", "-r|--re-invite");
+            return false;
+        }
+        mReinvite = true;
+        break;
     case 'h':
         poptPrintHelp(ctx, stderr, 0);
         return false;
@@ -240,43 +266,67 @@ bool CmdCall::processOneOption(poptContext ctx, int ret)
 bool CmdCall::processNonOptionArgs(poptContext ctx)
 {
     const char* arg = poptGetArg(ctx);
-    while (arg)
+    if (mEnd)
     {
-        UInt64 cid = Data(arg).convertUInt64();
-        if (cid)
+        while (arg)
         {
-            mCIDs.push_back(cid);
+            UInt64 id = Data(arg).convertUInt64();
+            if (id)
+            {
+                mIds.push_back(id);
+            }
+            arg = poptGetArg(ctx);
         }
-        arg = poptGetArg(ctx);
+    }
+    else
+    {
+        if (arg)
+        {
+            if (poptPeekArg(ctx))
+            {
+                setLastErr("Must specify a single target");
+                return false;
+            }
+            mTarget = arg;
+        }
     }
     return true;
 }
 
 bool CmdCall::exec()
 {
-    if (mFinish)
+    if (mEnd)
     {
-        if (mCIDs.empty())
+        if (mIds.empty())
         {
-            setLastErr("Specify a valid call number: .e.g., call --finish 1 2 3");
+            setLastErr("Must specify valid id");
             return false;
+        }
+        mSbc->finishCall(mIds);
+        return true;
+    }
+    else
+    {
+        if (mStart)
+        {
+            return mSbc->makeNewCall(mTarget.convertUInt64(), mFile);
         }
         else
         {
-            mSbc->finishCall(mCIDs);
-            return true;
+            if (mReinvite)
+            {
+                return mSbc->makeReinvite(mTarget.convertUInt64(), mFile);
+            }
+            resip::Uri aor;
+            resip::Data err;
+            if (!toUri(mTarget, aor, err, "aor"))
+            {
+                setLastErr(err.c_str());
+                return false;
+            }
+            return mSbc->makeNewCall(aor, mFile);
         }
     }
-
-    resip::Uri aor;
-    resip::Data err;
-    if (!toUri(mTarget, aor, err, "aor"))
-    {
-        setLastErr(err.c_str());
-        return false;
-    }
-
-    return mSbc->makeNewCall(aor, mFile);
 }
 
 //////////////////////////////////////////////////////////////////////////
